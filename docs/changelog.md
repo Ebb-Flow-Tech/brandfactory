@@ -4,6 +4,7 @@ Latest releases at the top. Each version has a one-line entry in the index below
 
 ## Index
 
+- **1.0.0** — 2026-04-21 — Hosted-deploy baseline (Phases 1–6): Supabase auth `ensureUser` auto-provision (+4 tests), server `Dockerfile` + `fly.toml` + root `.dockerignore`, `pg` pooler-safety invariants pinned in `db/client.ts`, single-instance `native-ws` commitment documented in `adapters.ts` + README, `packages/web/vercel.json` SPA fallback, CORS allowlist (already shipped 0.8.0) gates split-origin Vercel ↔ Fly. 238 tests (+4).
 - **0.8.0** — 2026-04-20 — Phase 8 (scope-cut, no deploy recipe): `db:seed` dev token, root `.env.example` + drift guard, GitHub Actions CI on Postgres 16, README rewrite, `CORS_ALLOWED_ORIGINS` gates HTTP + WS. 234 tests (+11).
 - **0.7.4** — 2026-04-20 — Phase 7 Steps 12–16: real canvas pane (TipTap text / image / file blocks, pin, drag-reorder, drop-zone upload), unified `applyAgentEvent` module, shell polish (dark mode, router error/pending, `Cmd-S`), frontend vitest pass (+56), dev/env plumbing. 223 tests (+56).
 - **0.7.3** — 2026-04-20 — Phase 7 Steps 7–11: workspaces/brands list, workspace picker, settings page, TipTap+dnd-kit brand editor, project split-screen with realtime, `useAgentChat` SSE hook + Markdown chat pane.
@@ -19,6 +20,183 @@ Latest releases at the top. Each version has a one-line entry in the index below
 - **0.3.0** — 2026-04-18 — Phase 2: `@brandfactory/db` lands — drizzle schema for 8 tables, singleton pg `Pool`, 18 query helpers, local-dev docker Postgres, and an end-to-end smoke check.
 - **0.2.0** — 2026-04-18 — Phase 1: `@brandfactory/shared` lands as the single source of truth for domain types and zod schemas, consumed by both `server` and `web`.
 - **0.1.0** — 2026-04-18 — Project bootstrap: vision, architecture blueprint, scaffolding plan, and Phase 0 repo foundation.
+
+---
+
+## 1.0.0 — 2026-04-21
+
+The 1.0 cut. Six phases of the hosted-deploy plan land together as a single milestone — Supabase as the managed Postgres + Auth + Storage backend, Fly as the API runtime (Hono on Node + native-ws), Vercel as the SPA host. This release crosses the line from "self-host-friendly v0.8 codebase" to "first production deploy is a sequenced operator playbook against artefacts that already live in the repo". Future versions will iterate on the deployed surface; this one establishes the baseline.
+
+The split between code and operator work is intentional: every credential-bearing or dashboard-bound step (creating the Supabase project, minting the storage bucket, running migrations against the production DB, `fly secrets set`, `fly deploy`, the Vercel project setup, Supabase auth redirect URLs) lives in playbooks under `docs/completions/phase{1,2,3,4,5,6}-hosted.md`, and the repo ships only the artefacts and code paths those playbooks need. The result is a small, auditable diff (~70 lines of net code change across the six phases) that closes the deployment gap without dragging in feature scope.
+
+Test count 234 → **238 (+4)**, all from Phase 1's `ensureUser` coverage. Phases 2–6 are documentation, config, and one defensive-comment additions — no new behaviour, no new tests required. `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test` all green across 9 workspaces. Plan source: [docs/executing/hosted-deployment-plan.md](../executing/hosted-deployment-plan.md).
+
+### Phase 1 — Supabase identity reconciliation
+
+The single code-bearing item across the phase: an auto-provision hook for the `public.users` row on first authed Supabase request. Supabase Auth owns `auth.users` (keyed by JWT `sub`, a UUID Supabase mints on signup). Our domain tables FK against `public.users(id)`. After a fresh signup the JWT verifies cleanly but `getUserById(sub)` returns `null` — every authed route that joins against the user 404s.
+
+**Where the hook lives.** Inside the Supabase auth adapter — `packages/adapters/auth/src/supabase.ts` — folded into `verifyToken`. The two alternatives (route-level provisioning in `/me`, or a Supabase `auth.users` DB trigger) were both rejected: the route-level path leaves every other authed surface vulnerable; the DB trigger introduces cross-schema vendor coupling that's hard to diff in code review and irreversible from the repo. Adapter-level provisioning runs on every authed request through one chokepoint, with cleanly-injectable test seams.
+
+**Idempotent upsert.** New helper `upsertUserById({ id, email, displayName? })` in `packages/db/src/queries/users.ts`:
+
+```ts
+await db
+  .insert(users)
+  .values({ id, email, displayName })
+  .onConflictDoNothing({ target: users.id })
+```
+
+`onConflictDoNothing` keeps the call boring and free of overwriting surprises. First-seen email is canonical — operator-driven email changes go through a separate flow, not here.
+
+**Process-level dedup cache.** A naive design would hit the DB on every authed call (10–30 ms per pooler round-trip). The adapter keeps a `Set<string>` of `sub`s it's already provisioned; subsequent verifies skip the write. Memory cost scales with unique users in flight (bounded). Cleared on process restart, which is fine — the upsert is idempotent so a post-restart re-provision is a no-op.
+
+**Failure handling.** `ensureUser` throwing (DB outage, pooler saturation) logs `console.warn` and returns `{ userId: sub }` as if the upsert had succeeded. A DB hiccup shouldn't turn every authed request into a 401 on an otherwise-valid token. The dedup set is **not** populated on failure, so the next request retries. The downstream cost is isolated to routes that need a real `users` row (`/me`, anything joining against the user) — those 404 as they did pre-provisioning. Pinned by the test `'does not fail verifyToken when ensureUser throws'`.
+
+**Missing email claim.** Supabase JWTs carry `email` for password / magic-link / OAuth flows. The rare absent-email case (custom JWT, anon auth) skips the upsert — `users.email` is `NOT NULL`, so a `null`-email insert would error. Skip-and-404 preserves the pre-provisioning fallback. Covered by `'skips auto-provisioning when the email claim is missing'`.
+
+**Tests added (+4).** Auto-provision on first verify with email present, dedup on second verify of same `sub`, skip when email claim is missing, tolerate `ensureUser` throwing. `SupabaseAuthDeps` gains `ensureUser?: (input: { id: string; email: string }) => Promise<void>` and `provisionedCache?: Set<string>` test seams; the default `ensureUser` is `dbUpsertUserById` from `@brandfactory/db`.
+
+Operator-side Phase 1 work (Supabase project creation, migrations against the direct URL, storage bucket `brandfactory-blobs` private, admin user seed) lives in `docs/completions/phase1-hosted.md`. Critical: **do not run `db:seed` against a production Supabase DB** — it inserts a fixed-UUID demo user and is local-dev-only.
+
+### Phase 2 — Server Dockerfile + fly.toml
+
+Three artefacts land at the repo root or under `packages/server`. Together they let `fly deploy` build a ~200 MB image and boot it with non-secret env baked in + secrets loaded via `fly secrets set`.
+
+**`packages/server/Dockerfile` — multi-stage, no TypeScript build.** The plan's text said `pnpm -F @brandfactory/server... build`. Re-reading the tree, **no workspace package has a `build` script** (only `packages/web` has a Vite build). Following the plan verbatim would require a separate prereq pass — composite `tsc --build` configs across 7 TS packages, `"main": "./src/index.ts"` → `"./dist/index.js"` flips, vitest's in-place-source expectations untangled. That's a meaningfully-sized refactor the plan didn't scope.
+
+**Decision: ship source, run with `tsx` in the container.** Semantically equivalent to `pnpm start` today. Trade-off: ~100–300 ms JIT-transpile cost on cold start (tsx caches across module loads, runtime warm-path unaffected). The container's `CMD` and `pnpm start` run the exact same code path. Reversible: if compile-to-JS ever becomes worthwhile (cold-start budget, smaller image), add `build` scripts, flip `CMD` to `node dist/main.js`, move `tsx` back to devDeps.
+
+The one consequence: **`tsx` moved from `devDependencies` → `dependencies`** in `@brandfactory/server`. It's genuinely a runtime dep now and `pnpm deploy --prod` drops devDeps; without the move, `tsx` wouldn't ship. One-line `package.json` change.
+
+**Stage 1 (builder) layout.** `corepack enable` activates pnpm at the version pinned in `packageManager` (10.28.2). Manifests copied first (lockfile, workspace config, every package's `package.json`) — standard Docker-cache hack: install layer only re-runs when manifests change. `pnpm install --frozen-lockfile` errors out on lockfile drift. Sources for `shared`, `db`, `agent`, all four `adapters/*`, `server` copied next. `pnpm --filter=@brandfactory/server deploy --prod --legacy /out` materializes a standalone tree at `/out` — workspace deps **copied** (not symlinked) into `/out/node_modules/@brandfactory/*`, prod-only third-party deps hoisted, `tsx` binary present at `/out/node_modules/.bin/tsx`.
+
+**Why `--legacy` on `pnpm deploy`.** Confirmed locally: pnpm v10 aborts `pnpm deploy` with `ERR_PNPM_DEPLOY_NONINJECTED_WORKSPACE` unless either the repo sets `inject-workspace-packages=true` (broad change, affects every install) or the deploy invocation passes `--legacy`. The legacy impl is what we want — copy workspace packages, install prod deps, flat tree. The non-legacy impl introduces injected-packages semantics that aren't needed here and would require other config changes.
+
+**Stage 2 (runtime).** `node:20-alpine` + `apk add --no-cache tini`. tini forwards SIGINT/SIGTERM to PID 1 — without it, Node ignores SIGTERM by default and `fly restart` + graceful shutdown silently fail. `main.ts` already handles both signals; tini is what makes sure they arrive. `ENTRYPOINT ["/sbin/tini", "--"]` + `CMD ["node_modules/.bin/tsx", "src/main.ts"]` — no `npm run` / `pnpm start` indirection, one `exec` call, no shell between Node and PID 1.
+
+**`.dockerignore` at the repo root, not `packages/server/.dockerignore`.** Per-Dockerfile dockerignores are handled inconsistently across build frontends — repo-root `.dockerignore` works in classic Docker, BuildKit, and every Fly CLI version. Since the Dockerfile uses explicit `COPY packages/server/...` paths, the image stays scoped to server-only content without per-Dockerfile ignore. Excludes `node_modules`, build artefacts, `.env*` (except `.env.example`), web sources, docs/scripts, test files.
+
+**`fly.toml` at the repo root.** `app = "brandfactory-api"` and `primary_region = "iad"` are placeholders — operator updates both before first deploy. `kill_signal = "SIGINT"` matches `main.ts`' graceful-shutdown path. `auto_stop_machines = false`, `auto_start_machines = true`, `min_machines_running = 1` keeps the realtime bus alive (native-ws holds subscribers in-process; stopping the Machine evicts them). `[[http_service.checks]]` on `/health` matches the existing health route. `[env]` carries non-secret defaults (`AUTH_PROVIDER=supabase`, `STORAGE_PROVIDER=supabase`, `REALTIME_PROVIDER=native-ws`, `LLM_PROVIDER=openrouter`, `LLM_MODEL=anthropic/claude-sonnet-4.6`).
+
+One opinionated deviation: `[[vm]] memory = "512mb"`. Fly's default 256 MiB shared-cpu-1x fits Node + tsx + pg Pool + ws subscribers at idle but pushes uncomfortably close under a handful of concurrent agent streams. 512 MiB gives breathing room at negligible extra cost. Sized up, not out — `cpu_kind = "shared"`.
+
+**No `release_command`.** Plan-specified. Migrations run from a trusted workstation against the direct Supabase URL (port 5432), not via Fly, until rollback discipline catches up.
+
+**Packaging smoke.** `pnpm --filter=@brandfactory/server deploy --prod --legacy /tmp/bf-deploy-test` produces a standalone tree; `node_modules/.bin/tsx src/main.ts` against it reaches the env validator (zod errors out on missing `DATABASE_URL` / `AUTH_PROVIDER` / etc.) — proves packaging + tsx entry + workspace-dep resolution all work end-to-end. Mirrors what the runtime stage does after `COPY --from=builder /out /app`.
+
+### Phase 3 — Fly deploy invariants
+
+One file changed: `packages/db/src/client.ts`. Five-line comment next to `new Pool({ connectionString })` pinning the pooler-safety invariants:
+
+- **Do not enable server-side prepared statements** on this Pool.
+- **Do not introduce `pg-native`.**
+
+Both assumptions hold in v1 because node-postgres' default code path does neither — the JavaScript client uses the simple-query protocol by default, and `pg-native` is an explicit opt-in. The comment exists so a future contributor adding prepared-statement caching (a reasonable Postgres optimisation under a session-mode pooler or a direct connection) knows why it would silently break the production deploy where `DATABASE_URL` points at Supabase's PgBouncer on port 6543 (transaction mode).
+
+**Why this matters.** PgBouncer in transaction mode multiplexes many clients over a small number of Postgres backends; any state expecting to outlive a single transaction (prepared statements cached in a session, `SET` that persists, temp tables, `LISTEN` subscriptions) gets silently lost when PgBouncer hands the next transaction to a different backend. The failure mode is devious — works fine under low concurrency (one backend always handy), breaks under load when PgBouncer starts multiplexing.
+
+The plan asked for "a one-line comment in `client.ts` pinning the invariant. No code change needed today." That's exactly what landed.
+
+Operator-side: nine `fly secrets set` values (`DATABASE_URL` to the **transaction pooler** at port 6543, not the direct URL; `SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_KEY` / `SUPABASE_STORAGE_BUCKET` / `SUPABASE_JWKS_URL` / `SUPABASE_JWT_ISSUER` / `SUPABASE_JWT_AUDIENCE`, `OPENROUTER_API_KEY`), then `fly deploy`, then curl `/health` (expect 200) and `/me` with a Supabase access token (expect 200, body `{ id, email }` — also triggers Phase 1's `ensureUser` upsert server-side). Full playbook in `docs/completions/phase3-hosted.md`, including the preemptive failure-mode list (direct-URL connection exhaustion, JWT issuer/audience typos, region mismatch latency, OOM at 512 MiB).
+
+### Phase 4 — Realtime / WS on Fly
+
+No Fly config changes. The HTTP service already proxies `Upgrade: websocket` transparently — `wss://<app>.fly.dev/rt` works without a separate `[[services]]` block or TCP handler. The pre-shipped 30 s heartbeat (`DEFAULT_HEARTBEAT_MS` in `packages/adapters/realtime/src/native-ws.ts:21`) gives 2× headroom over Fly's 60 s edge idle timeout.
+
+What landed is two doc-only changes pinning the single-instance commitment in the two places a contributor would look:
+
+**`packages/server/src/adapters.ts`** — expanded the existing 2-line note above the `native-ws` branch into a paragraph: subscribers live in a `Map` on one Node heap (in-process pub/sub); `fly scale count 2` / `replicas > 1` silently drops cross-instance fan-out; horizontal scale requires a second `RealtimeAdapter` branch first (Supabase Realtime / Redis pub-sub); points to hosted-deployment-plan.md Question 3 for the trigger conversation. Sits exactly where the next contributor would edit — `buildAdapters` is the only construction site for the realtime adapter.
+
+**`README.md`** — added one bullet under "Deploying it yourself" (Scaling). Vertical scale is fine (bigger VM); horizontal isn't, and the why is explained in one sentence with a link out.
+
+The two-tab browser smoke test (the plan's full check — edit on Tab A, see the block paint on Tab B within one RTT) is operator work that depends on Phase 5 being live first. Single-tab CLI smoke via `wscat` against `wss://<app>.fly.dev/rt?token=$JWT` is feasible interim coverage; both flows documented in `docs/completions/phase4-hosted.md`.
+
+### Phase 5 — Frontend on Vercel
+
+One file: `packages/web/vercel.json` — SPA fallback rewrite.
+
+```json
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}
+```
+
+Without it, any deep-link into a TanStack Router client route (e.g. `/workspaces/abc/projects/xyz`) 404s on browser refresh because Vercel looks for a literal static file at that path. Standard Vite+SPA pattern: every incoming path that isn't a static asset maps back to `index.html`, so the SPA router owns all routing. Static assets under `/assets/*` keep direct file-match because Vercel's rewrite engine checks the filesystem first and only falls back to the rewrite on a miss.
+
+**Root-Directory placement matters.** `vercel.json` must sit at the Vercel "Project Root Directory", which per the plan is `packages/web` (not the repo root). Vercel's monorepo-scoped build wouldn't see it at the repo root. This also means the `rewrites` only affect the web app — the monorepo's other packages are invisible to Vercel.
+
+**No Vite config change.** The 1.1 MB main-chunk warning persists (TipTap + Radix dominate; flagged since Phase 7 Step 15). Code-splitting / lazy-import pass remains a deferred item. The Phase 2 "ship source, skip `tsc -b`" decision applies here too: Vite resolves cross-package TS via workspace symlinks at build time, walking `@brandfactory/shared`'s `main: ./src/index.ts` and bundling TS directly into the final JS.
+
+Operator-side: Vercel project setup (Framework: Vite; Root Directory: `packages/web`; Build Command: `pnpm -F @brandfactory/web build`; Output Directory: `dist`; Node 20.x), five `VITE_*` env vars (`VITE_API_BASE_URL`, `VITE_RT_URL`, `VITE_AUTH_PROVIDER=supabase`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` — all five public-safe), Supabase auth redirect URLs (`https://<vercel-app>.vercel.app/**` plus a preview wildcard plus `http://localhost:5173/**` — trailing `/**` is mandatory because Supabase magic-link callbacks include a hash fragment and the redirect allowlist pattern-matches on prefix). First push to `main` triggers the build; ~2–3 min. Full playbook in `docs/completions/phase5-hosted.md`.
+
+**Expected interim breakage between Phase 5 and Phase 6.** Authed requests with `Authorization: Bearer ...` trigger CORS preflight; without `CORS_ALLOWED_ORIGINS` set on Fly, those preflights fail. `/me` will fail in the browser even though `curl` works. This is sequenced intentionally — Phase 6 flips the switch.
+
+### Phase 6 — Cross-origin wiring (CORS)
+
+No code changes. The CORS gating shipped in v0.8.0 (Phase 8) — `parseCorsAllowedOrigins` + `isOriginAllowed` helpers in `packages/server/src/cors.ts`, conditional `hono/cors` mount in `app.ts`, WS upgrade-guard in `ws.ts` — was designed as a runtime-only switch. Setting `CORS_ALLOWED_ORIGINS` flips both transports on in lockstep. Phase 6 is one `fly secrets set CORS_ALLOWED_ORIGINS="https://<project>.vercel.app"` and the Machine restarts automatically.
+
+**Exact-match only.** Paste the full origin: scheme + host (+ port if non-default). No trailing slash, no wildcard, no path. Custom domain? Comma-separate both — `https://<project>.vercel.app,https://app.brandfactory.com` — for the transition period. The split/trim/filter in `parseCorsAllowedOrigins` does not normalize trailing slashes by design; exact-match keeps the trust boundary crisp.
+
+**Preview deploys.** If a preview URL needs live-API access, add it temporarily (comma-append). Not scalable across many previews. The plan flags wildcard / suffix-match support as a ~10-line extension (a `match` variant that falls through `exact-match → endsWith-match → deny`, behind an opt-in flag) plus one test — landing it preemptively was rejected per scope discipline. First time preview-against-prod becomes routine, that's the prompt.
+
+**Smoke from the browser** (DevTools Network):
+
+| Request                              | Expected                                                                     |
+| ------------------------------------ | ---------------------------------------------------------------------------- |
+| `OPTIONS /me` (preflight)            | 204 with `Access-Control-Allow-Origin: <vercel-origin>`, `Access-Control-Allow-Credentials: true`, `Access-Control-Allow-Methods` / `-Headers` present. |
+| `GET /me` with `Authorization: Bearer <jwt>` | 200, body `{ id, email, ... }`. No CORS error in Console.                 |
+| `WS /rt?token=...`                   | 101 upgrade. `Origin` header carries the Vercel URL.                         |
+
+Optional WS deny-path smoke — `curl` with a forged `Origin: https://evil.test` against `/rt` should return 403 (the upgrade handler writes `HTTP/1.1 403 Forbidden\r\n\r\n` directly to the socket so the browser reads a permanent denial, not a transport error that would trigger reconnect loops).
+
+The plan's full end-to-end smoke (login → workspace → brand → project → drop image → ask agent) is the last operator step and the proof that all six phases line up. Detailed in `docs/completions/phase6-hosted.md`.
+
+### Verification
+
+```
+pnpm typecheck                          ✔  9/9 workspaces clean
+pnpm lint                               ✔  clean
+pnpm format:check                       ✔  clean
+pnpm test                               ✔  237 passed + 1 skipped (238 total; +4 vs 0.8.0)
+pnpm --filter=@brandfactory/server deploy --prod --legacy /tmp/bf-deploy-test
+                                        ✔  standalone tree built; tsx reaches env validator
+```
+
+The skipped case is `seed.test.ts` (runs only with `DATABASE_URL` set, exercised in CI's Postgres service). All four new tests are in `packages/adapters/auth/src/supabase.test.ts` (+4) covering the `ensureUser` provisioning path.
+
+### Files touched (net diff)
+
+- `packages/adapters/auth/src/supabase.ts` — `verifyToken` now calls `ensureUser` on first verify per `sub`; `SupabaseAuthDeps` gains `ensureUser?` and `provisionedCache?` test seams.
+- `packages/adapters/auth/src/supabase.test.ts` — +4 cases.
+- `packages/db/src/queries/users.ts` — new `upsertUserById({ id, email, displayName? })` helper.
+- `packages/db/src/client.ts` — pooler-safety invariants comment.
+- `packages/server/src/adapters.ts` — single-instance commitment paragraph above the `native-ws` branch.
+- `packages/server/Dockerfile` — new (multi-stage, `pnpm deploy --prod --legacy /out`, tini-wrapped tsx).
+- `packages/server/package.json` — `tsx` moved from devDependencies to dependencies.
+- `packages/web/vercel.json` — new (SPA fallback rewrite).
+- `fly.toml` — new (repo root).
+- `.dockerignore` — new (repo root).
+- `README.md` — Scaling bullet under "Deploying it yourself".
+- `docs/executing/hosted-deployment-plan.md` — the source plan, retained.
+- `docs/completions/phase{1,2,3,4,5,6}-hosted.md` — six per-phase completion docs with operator playbooks.
+
+### What 1.0 explicitly does NOT include
+
+**Operator work that remains to actually be live in production:** create the Supabase project + run migrations + seed admin user + create the `brandfactory-blobs` bucket; `flyctl auth login` + `fly apps create` + update `app` and `primary_region` in `fly.toml`; `fly secrets set` for nine env vars + `fly deploy` + smoke `/health` and `/me`; create the Vercel project + set five `VITE_*` env vars + configure Supabase redirect URLs + push to `main`; `fly secrets set CORS_ALLOWED_ORIGINS` and end-to-end smoke. None of this can be automated from inside the repo — credentials, dashboards, and human judgement on region selection are involved.
+
+**Deferred items, by category:**
+
+- **Migrations automation.** `release_command` for `db:migrate` would let `fly deploy` apply migrations atomically; v1 keeps manual migration from a trusted workstation against the direct URL (port 5432) until rollback discipline catches up.
+- **Horizontal scale.** Single-instance commitment is documented in three places (adapters.ts, README, fly.toml). A second `RealtimeAdapter` impl (Supabase Realtime is the no-new-infra candidate; Redis pub-sub the cheaper one) lands when concurrency demands it, not preemptively. See plan Question 3.
+- **CI for deploys.** No `.github/workflows/deploy.yml`. `fly deploy` runs from a trusted workstation in v1.
+- **Wildcard / suffix-match CORS.** Exact-match only today; ~10-line extension when preview-against-prod becomes routine.
+- **Custom domains.** `*.fly.dev` and `*.vercel.app` are fine for dogfooding; `fly certs` + Vercel Domains land later.
+- **Observability.** `fly logs` + the existing `rt.*` / request-id breadcrumbs are v1 observability. Sentry / structured error tracking deferred (plan Question 6).
+- **Graceful-drain on deploy.** Today `fly deploy` restarts the Machine, killing all WS connections; clients reconnect within seconds via exponential backoff. Zero-downtime WS drain would need Fly's drain-target + a server-side "new connections rejected" flip — not user-visible-critical at v1.
+- **Resumable subscriptions / push-based replay.** `onResynced` fires on reconnect and the canvas re-queries; state converges. Push-based replay is incremental nice-to-have.
+- **Image size optimization.** ~200 MB Alpine + pnpm-deploy pruning. Distroless / slim variants would shave further; not worth it at this budget.
+- **Dropped self-host deploy recipe** (carried forward from 0.8.0): server + web Dockerfiles for self-hosters (the v1 Dockerfile is server-only and Fly-shaped), three-service compose, `bootstrap.sh`, GHCR image publishing, multi-arch image builds, signed releases, production TLS / reverse-proxy configs. Returns when a concrete self-hoster surfaces with a real setup to support.
 
 ---
 

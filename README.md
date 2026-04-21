@@ -149,6 +149,13 @@ you're packaging:
 - **Split-origin CORS** — set `CORS_ALLOWED_ORIGINS` to the exact web
   origin(s). Same allowlist gates the `/rt` WebSocket upgrade so HTTP
   and WS can't drift.
+- **Scaling** — stay at **one server instance**. The realtime bus
+  (`native-ws`) holds subscribers in-process, so running two+ instances
+  silently breaks cross-instance fan-out: a canvas edit on Machine A
+  never reaches a subscriber on Machine B. Vertical scaling (bigger VM)
+  is safe. Horizontal scaling needs a cross-instance realtime adapter
+  (Supabase Realtime / Redis pub-sub) to land first — see
+  [hosted-deployment-plan.md Question 3](docs/executing/hosted-deployment-plan.md#questions-for-review).
 
 Docker images, a production compose stack, and a `bootstrap.sh` are
 intentionally deferred until a real self-hoster surfaces with a concrete

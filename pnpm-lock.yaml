@@ -218,6 +218,9 @@ importers:
       hono:
         specifier: ^4.6.12
         version: 4.12.14
+      tsx:
+        specifier: ^4.19.2
+        version: 4.21.0
       ws:
         specifier: ^8.18.0
         version: 8.20.0
@@ -231,9 +234,6 @@ importers:
       '@types/ws':
         specifier: ^8.5.13
         version: 8.18.1
-      tsx:
-        specifier: ^4.19.2
-        version: 4.21.0
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.17)(jsdom@29.0.2)(lightningcss@1.32.0)

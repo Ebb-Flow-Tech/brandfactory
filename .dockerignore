@@ -1,0 +1,56 @@
+# Applies to the build context when building `packages/server/Dockerfile`.
+# Docker searches for .dockerignore at the context root (repo root here) —
+# per-Dockerfile locations are unreliable across build frontends, so we
+# keep this at the root and rely on explicit COPY paths in the Dockerfile
+# to scope what actually lands in the image.
+
+# Install artefacts on the host that would otherwise overwrite the pnpm
+# install run inside the builder stage.
+node_modules
+**/node_modules
+
+# Local env files — never ship secrets. `.env.example` is tracked by git.
+.env
+.env.*
+!.env.example
+
+# Build outputs / caches.
+dist
+**/dist
+.turbo
+.vite
+**/.vite
+coverage
+**/coverage
+*.tsbuildinfo
+
+# VCS + editor + CI noise.
+.git
+.gitignore
+.github
+.vscode
+.idea
+.husky
+.lintstagedrc*
+.prettierignore
+.prettierrc*
+eslint.config.*
+vitest.config.*
+vitest.workspace.*
+
+# Test files ship harmless but inflate context size.
+**/*.test.ts
+**/*.test.tsx
+
+# The web package isn't part of the API image.
+packages/web
+
+# Docs / scripts not referenced at runtime.
+docs
+scripts
+
+# Platform configs not needed inside the image.
+fly.toml
+Dockerfile
+**/Dockerfile
+.dockerignore

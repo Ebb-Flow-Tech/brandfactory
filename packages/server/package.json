@@ -27,13 +27,13 @@
     "@hono/zod-validator": "^0.7.6",
     "dotenv": "^16.4.7",
     "hono": "^4.6.12",
+    "tsx": "^4.19.2",
     "ws": "^8.18.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
     "@types/ws": "^8.5.13",
-    "tsx": "^4.19.2",
     "vitest": "^2.1.8"
   }
 }

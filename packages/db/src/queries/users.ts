@@ -31,3 +31,24 @@ export async function createUser(input: {
   if (!row) throw new Error('createUser returned no row')
   return row
 }
+
+// Auto-provision helper for the Supabase auth flow: insert a `users` row
+// keyed by the JWT `sub`, or no-op if a row with that id already exists.
+// `onConflictDoNothing` on the primary key keeps this idempotent and safe to
+// run on every verified request. Does NOT update email on conflict — we
+// treat the first seen email as canonical; operator-driven changes go
+// through a separate flow.
+export async function upsertUserById(input: {
+  id: string
+  email: string
+  displayName?: string | null
+}): Promise<void> {
+  await db
+    .insert(users)
+    .values({
+      id: input.id as UserId,
+      email: input.email,
+      displayName: input.displayName ?? null,
+    })
+    .onConflictDoNothing({ target: users.id })
+}
