@@ -4,8 +4,8 @@
 # Secrets (DATABASE_URL, SUPABASE_*, OPENROUTER_API_KEY, CORS_ALLOWED_ORIGINS)
 # are set via `fly secrets set`, not in this file.
 
-app            = "brandfactory-api"
-primary_region = "iad"
+app            = "brandfactory"
+primary_region = "sin"
 kill_signal    = "SIGINT"
 
 [build]
