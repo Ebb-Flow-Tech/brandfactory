@@ -33,6 +33,12 @@ pnpm -F @brandfactory/web dev &
 web_pid=$!
 
 # Exit as soon as either process dies — matches "Ctrl-C kills everything".
-# Without `-n`, a crashed server would leave Vite running and produce
-# misleading 500s in the browser. `cleanup` above then tears down the peer.
-wait -n
+# `wait -n` is the clean path (bash 4.3+); macOS ships with bash 3.2, so
+# fall back to polling both PIDs. `cleanup` above then tears down the peer.
+if wait -n 2>/dev/null; then
+  :
+else
+  while kill -0 "${server_pid}" 2>/dev/null && kill -0 "${web_pid}" 2>/dev/null; do
+    sleep 1
+  done
+fi

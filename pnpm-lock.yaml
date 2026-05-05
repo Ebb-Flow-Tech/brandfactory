@@ -160,6 +160,9 @@ importers:
       '@brandfactory/shared':
         specifier: workspace:*
         version: link:../shared
+      drizzle-kit:
+        specifier: ^0.28.1
+        version: 0.28.1
       drizzle-orm:
         specifier: ^0.36.4
         version: 0.36.4(@opentelemetry/api@1.9.0)(@types/pg@8.20.0)(@types/react@19.2.14)(pg@8.20.0)(react@19.2.5)
@@ -173,9 +176,6 @@ importers:
       '@types/pg':
         specifier: ^8.11.10
         version: 8.20.0
-      drizzle-kit:
-        specifier: ^0.28.1
-        version: 0.28.1
       tsx:
         specifier: ^4.19.2
         version: 4.21.0
