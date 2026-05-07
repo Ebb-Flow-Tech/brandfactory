@@ -2,6 +2,8 @@ import { type ReactNode, useEffect, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useAuthStore } from './store'
 
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '/api') as string
+
 interface MeResponse {
   id: string
 }
@@ -18,7 +20,7 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
     if (!token) return
 
     const controller = new AbortController()
-    void fetch('/api/me', {
+    void fetch(`${API_BASE}/me`, {
       headers: { authorization: `Bearer ${token}` },
       signal: controller.signal,
     })

@@ -20,13 +20,13 @@
   },
   "dependencies": {
     "@brandfactory/shared": "workspace:*",
-    "drizzle-kit": "^0.28.1",
     "drizzle-orm": "^0.36.4",
     "pg": "^8.13.1"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
     "@types/pg": "^8.11.10",
+    "drizzle-kit": "^0.28.1",
     "tsx": "^4.19.2",
     "vitest": "^2.1.8"
   }

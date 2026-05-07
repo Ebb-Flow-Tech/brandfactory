@@ -11,12 +11,12 @@ kill_signal    = "SIGINT"
 [build]
   dockerfile = "packages/server/Dockerfile"
 
-# Migrations run before new machines start serving. drizzle.config.ts uses
-# paths relative to the db package (./src/schema, ./drizzle), so we cd into
-# it before invoking drizzle-kit. Binary lives at the top-level .bin because
-# `pnpm deploy --prod --legacy` hoists transitive deps.
+# Migrations run before new machines start serving. The migrate script
+# uses `drizzle-orm/migrator` directly (not drizzle-kit) so we don't have
+# to ship dev tooling in the runtime image; `migrationsFolder: './drizzle'`
+# resolves relative to cwd, hence the cd into the db package.
 [deploy]
-  release_command = "sh -c 'cd node_modules/@brandfactory/db && /app/node_modules/.bin/drizzle-kit migrate'"
+  release_command = "sh -c 'cd node_modules/@brandfactory/db && node scripts/migrate.mjs'"
 
 [http_service]
   internal_port        = 3001

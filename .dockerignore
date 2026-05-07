@@ -42,8 +42,12 @@ vitest.workspace.*
 **/*.test.ts
 **/*.test.tsx
 
-# The web package isn't part of the API image.
+# The web package isn't part of the API image. But pnpm's workspace
+# resolution emits a missing-member warning during `pnpm install` if the
+# manifest is absent, so re-include just the package.json while keeping
+# the source out. Mirrors the COPY in `packages/server/Dockerfile`.
 packages/web
+!packages/web/package.json
 
 # Docs / scripts not referenced at runtime.
 docs

@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label'
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 const supabase = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '/api') as string
 
 interface MeResponse {
   id: string
@@ -28,9 +29,12 @@ export function SupabaseAuthProvider() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN' && session?.access_token) {
+      // INITIAL_SESSION fires on subscribe — covers the case where the URL
+      // exchange completed before this listener attached.
+      const isAuthEvent = event === 'SIGNED_IN' || event === 'INITIAL_SESSION'
+      if (isAuthEvent && session?.access_token) {
         const token = session.access_token
-        void fetch('/api/me', { headers: { authorization: `Bearer ${token}` } })
+        void fetch(`${API_BASE}/me`, { headers: { authorization: `Bearer ${token}` } })
           .then(async (res) => {
             if (!res.ok) return
             const data = (await res.json()) as MeResponse
@@ -69,7 +73,10 @@ export function SupabaseAuthProvider() {
     try {
       const { error: signInError } = await supabase.auth.signInWithOtp({
         email: email.trim(),
-        options: { emailRedirectTo: window.location.origin },
+        // Land on /login so SupabaseAuthProvider mounts and processes the
+        // ?code= query. Returning to `/` lets indexRoute.beforeLoad redirect
+        // before the auth code is exchanged, stripping the query.
+        options: { emailRedirectTo: `${window.location.origin}/login` },
       })
       if (signInError) {
         setError(signInError.message)

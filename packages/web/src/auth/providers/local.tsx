@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '/api') as string
+
 interface MeResponse {
   id: string
 }
@@ -21,7 +23,7 @@ export function LocalAuthProvider() {
     setError(null)
     setLoading(true)
     try {
-      const res = await fetch('/api/me', {
+      const res = await fetch(`${API_BASE}/me`, {
         headers: { authorization: `Bearer ${token.trim()}` },
       })
       if (!res.ok) {
