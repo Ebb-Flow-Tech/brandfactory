@@ -4,6 +4,7 @@ Latest releases at the top. Each version has a one-line entry in the index below
 
 ## Index
 
+- **1.1.0** — 2026-05-18 — Projects reachable + functional, Thread A (Phases A.1–A.5): `useCreateProject` mutation hook in `api/queries/brands.ts`; `NewProjectDialog` + `ProjectCard` + `ProjectsSection` co-located in `brands.$brandId.tsx`; brand-page header restructured (subtitle dropped, Projects above Guidelines, `border-t` divider); static audit of all three nav paths (brand→project, project→brand, brand→workspace); two RTL render tests on `ProjectsSection`. ~155 LOC net across the web package. 240 tests (+2). Thread B (end-to-end verification matrix) tracked separately.
 - **1.0.0** — 2026-04-21 — Hosted-deploy baseline (Phases 1–6): Supabase auth `ensureUser` auto-provision (+4 tests), server `Dockerfile` + `fly.toml` + root `.dockerignore`, `pg` pooler-safety invariants pinned in `db/client.ts`, single-instance `native-ws` commitment documented in `adapters.ts` + README, `packages/web/vercel.json` SPA fallback, CORS allowlist (already shipped 0.8.0) gates split-origin Vercel ↔ Fly. 238 tests (+4).
 - **0.8.0** — 2026-04-20 — Phase 8 (scope-cut, no deploy recipe): `db:seed` dev token, root `.env.example` + drift guard, GitHub Actions CI on Postgres 16, README rewrite, `CORS_ALLOWED_ORIGINS` gates HTTP + WS. 234 tests (+11).
 - **0.7.4** — 2026-04-20 — Phase 7 Steps 12–16: real canvas pane (TipTap text / image / file blocks, pin, drag-reorder, drop-zone upload), unified `applyAgentEvent` module, shell polish (dark mode, router error/pending, `Cmd-S`), frontend vitest pass (+56), dev/env plumbing. 223 tests (+56).
@@ -20,6 +21,133 @@ Latest releases at the top. Each version has a one-line entry in the index below
 - **0.3.0** — 2026-04-18 — Phase 2: `@brandfactory/db` lands — drizzle schema for 8 tables, singleton pg `Pool`, 18 query helpers, local-dev docker Postgres, and an end-to-end smoke check.
 - **0.2.0** — 2026-04-18 — Phase 1: `@brandfactory/shared` lands as the single source of truth for domain types and zod schemas, consumed by both `server` and `web`.
 - **0.1.0** — 2026-04-18 — Project bootstrap: vision, architecture blueprint, scaffolding plan, and Phase 0 repo foundation.
+
+---
+
+## 1.1.0 — 2026-05-18
+
+First post-deploy feature release. Closes the gap the 1.0.0 narrative quietly carried: Projects — the centerpiece of the vision — were fully implemented on the server (Phase 6) and the frontend (Phase 7 Steps 7–16) but **unreachable from the live UI**. The brand editor page had zero project references; the `useBrandProjects` query hook sat in `api/queries/brands.ts` with no caller; the split-screen route at `/projects/$projectId` could only be opened by typing the URL. 1.1.0 wires Projects into the brand page and makes the full daily-use entry point — *open brand → start or resume a project* — work for the first time.
+
+Scope is **Thread A only** of [docs/executing/projects-reachable-and-functional.md](../executing/projects-reachable-and-functional.md). Thread B (end-to-end verification matrix + vision-bar observations) is a separate, manual, browser-driven workstream that lands as its own follow-up; 1.1.0 ships the wiring, Thread B will ship the Findings doc.
+
+Net diff is small and entirely confined to the web package: ~155 LOC across two existing files + one new test file. Test count 238 → **240 (+2)**, all green. `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test`, and `pnpm --filter @brandfactory/web build` all clean across 9 workspaces. Five per-phase completion docs under `docs/completions/projects-reachable-and-functional-phase-a{1..5}.md` carry the detailed record.
+
+### Phase A.1 — `useCreateProject` mutation hook
+
+`packages/web/src/api/queries/brands.ts` gains a `useCreateProject(brandId)` hook below the existing `useBrandProjects`. Mutation body is fetch-glue through the typed hono client (`api.brands[':brandId'].projects.$post`); `onSuccess` invalidates the `brandKeys.projects(brandId)` list cache.
+
+**Why `brands.ts`, not a new `projects.ts`.** Query-hook files are scoped by **route prefix**, not domain. `POST /brands/:brandId/projects` lives under the brand route on the server, so the mutation that calls it lives in the brand query module — same convention as `useBrandProjects`.
+
+**Why `invalidateQueries`, not `setQueryData`.** The list cache holds `Project[]`; appending optimistically would be a one-liner, but the list is the only consumer that needs the new row to appear, and a single `GET /brands/:brandId/projects` is cheap. Invalidate is more robust to future server-side sort/filter changes. Per-call concerns (close dialog, navigate to detail) live on the `mutate` invocation in A.2, not on the hook.
+
+**No new tests.** Per the plan's Step A.5: the hono RPC `$post` shape is type-checked at build time, and the mutation body is thin fetch-glue. Mutation-flow integration test is explicitly skipped (same call-out as `uploadBlob` in 0.7.4). Phase A.5 lands the render-side regression net instead.
+
+### Phase A.2 — `NewProjectDialog` component
+
+`packages/web/src/routes/brands.$brandId.tsx` gains a co-located `NewProjectDialog({ brandId })`. Mirrors `NewBrandDialog` in `workspaces.$wsId.index.tsx`: same `Dialog` / `DialogTrigger` / `DialogFooter` structure, same external-`<form>` + `form="..."` submit-button pattern, same `disabled={!name.trim() || mutation.isPending}` gating, same `'Creating…' | 'Create'` label switch, same `toast.error(err instanceof AppError ? err.message : 'Failed to create project')` shape.
+
+**Co-location, not extraction.** A shared `components/dialogs/` folder is premature until a third dialog appears. The duplication is mechanical and visible at the point of use.
+
+**No `kind` picker.** Submit payload is hard-coded `{ kind: 'freeform', name: trimmed }`. The shared schema supports `standardized` with a `templateId`, but no templates are registered yet. Per the question round (Q5): empty-roadmap surfaces look broken — omit until the day there's an option to pick. The hook from A.1 already accepts the full union, so this UI choice is reversible without touching the API layer.
+
+**Single-line `eslint-disable` marker for the intermediate phase.** The dialog is defined here but not yet rendered (A.3 wires it). Three options were on the table — prefix with `_`, bundle A.2+A.3, or scoped `eslint-disable-next-line`. Picked the disable with an inline rationale pointing at A.3. A.3 removes it the moment the dialog gets a caller. Net debt across A.2 + A.3 is zero.
+
+### Phase A.3 — Projects section on the brand editor page
+
+The visible phase. Until this lands, A.1's hook had no caller and A.2's dialog had no parent — both sat behind underscores and disables. A.3 mounts both, restructures the page header, and the user can — for the first time in the live UI — open a brand → see existing projects (or an empty state) → click "New project" → name it → land on the split-screen workspace.
+
+Two new components above `BrandEditorPage`:
+
+- **`ProjectCard({ project })`** — clickable card mirroring `BrandCard`. Shows `project.name` (semibold) + `Created <date>` (muted). Navigates to `/projects/$projectId` on click. Uses the same `grid-cols-[repeat(auto-fill,minmax(220px,1fr))]` grid as `BrandCard` for visual rhythm.
+- **`ProjectsSection({ brandId })`** — wires `useBrandProjects(brandId)`, renders `<h2>Projects</h2>` + `<NewProjectDialog />` trigger on the right, plus loading / error / empty / populated states underneath. Empty-state copy: *"No projects yet. Create one to start brainstorming with the agent."* — single line, muted, inline (not centered).
+
+Page-body restructure:
+
+- **Subtitle dropped.** Pre-A.3 the page header read `<h1>{brand.name}</h1>` then `<p>Brand guidelines</p>`. With Projects above Guidelines, the subtitle becomes actively misleading. Q1 picked option (a): drop entirely; two section headings (`Projects`, `Guidelines`) carry the structure. Option (c) — split into sub-routes — is the right answer eventually, once Shortlist and Finalize surfaces also land, but is premature when the page has two sections.
+- **Projects above Guidelines** (Q2, confirmed). Daily-use flow: open brand → resume project. Guidelines are the slower-moving artifact.
+- **Guidelines wrapped in their own `<section className="border-t pt-6">`** with an `<h2>Guidelines</h2>` heading. Single horizontal rule between the two sections; `pt-6` gives breathing room from the heading.
+
+**Independent fetches.** `useBrand(brandId)` and `useBrandProjects(brandId)` are two separate TanStack Query subscriptions. `ProjectsSection` lives **outside** the `brand &&` guard in `BrandEditorPage`, keyed by route-params `brandId` (always available). The guidelines loading/error UI lives *inside* the Guidelines section, scoped to that fetch. Consequence: project list can render while guidelines are still loading, and a guidelines load failure doesn't blank the projects.
+
+**`<section>` not `<div>`** for both blocks — semantic HTML; a11y / outline tooling reads them as siblings. The brand header (back link + `<h1>`) intentionally stays as a `<div>` because it's the page header, not a content section.
+
+**Project-card metadata kept lean** (Q4). Just name + `createdAt`. `updatedAt` exists on `Project` but two dates per card is noise without a recency-sort feature to motivate it. Block count / last-assistant-message preview would require `ProjectDetail`-shaped data; the list endpoint returns `Project[]` only — defer until the value justifies the over-fetch.
+
+A.2's `eslint-disable-next-line` is removed in this phase. The dialog now has a real caller.
+
+### Phase A.4 — Navigation no-op check
+
+Code-side audit of all three navigation paths Thread A depends on. The plan correctly anticipated they already existed; A.4's job was to confirm the round-trip closes after A.3 added a new navigate-out site (the project card). **No code change in this phase.**
+
+Three paths, all ✅ wired:
+
+1. **Forward, brand → project** (new in A.3) — `ProjectCard.onClick` calls `navigate({ to: '/projects/$projectId', params: { projectId: project.id } })`. Target route exists at `routes/projects.$projectId.tsx:52`, gated by `getAuthToken()`. Type-checked end-to-end: `Project.id` is `ProjectIdSchema` (UUID v4), `useParams` returns `{ projectId: string }`, `useProjectDetail(projectId)` is the first call in `ProjectPage`.
+2. **Back, project → brand** — `TopBar.tsx:7–13` renders `<Link to="/brands/$brandId" params={{ brandId: brand.id }}>{brand.name}</Link>`. `ProjectPage` already passes `data.brand` (part of `ProjectDetail`) into `TopBar`, so the breadcrumb has the brand object with no extra round-trip. After A.3 lands, returning here puts the user back on the brand page with the just-created project visible in the list (cache invalidation from A.1's `onSuccess` + TanStack Query's refetch-on-focus close the loop).
+3. **Back, brand → workspace** — existing `← Workspace` link in `brands.$brandId.tsx:370–382` branches on whether `brand` is loaded: if so, link to `/workspaces/$wsId` with the loaded `workspaceId`; if not, fall back to `/workspaces` (list). Right degradation — without a loaded brand we don't know which workspace to return to.
+
+Browser-side visual confirmation (focus management, scroll-restore, the brand-name actually painting from cache vs. a fresh fetch on back-nav) is deferred to Phase B rows 1 / 11 / 12. A.4 is the static-audit half of "the world we're navigating to works."
+
+### Phase A.5 — RTL render test for `ProjectsSection`
+
+`packages/web/src/routes/brands.$brandId.test.tsx` — new, 60 LOC. Two `describe('ProjectsSection')` cases: populated cache (seeds `brandKeys.projects(BRAND_ID)` with two `Project`s; asserts both names paint, empty-state copy does not) and empty cache (seeds `[]`; asserts the muted "No projects yet…" copy paints and the "New project" trigger button is reachable by role).
+
+`ProjectsSection` gains an `export` keyword — the only non-test code change in this phase. `ProjectCard`, `NewProjectDialog`, and `BrandEditorPage` remain file-private (no test consumer yet).
+
+**Why test `ProjectsSection` directly, not `BrandEditorPage`.** The plan asked for "one happy-path render test that mounts the page". A.5 deviated to mount the section instead because:
+
+- What A.3 built **is** `ProjectsSection`. Every regression a page-level test would catch on the new surface is caught by a section-level test, with one-third the setup. The Guidelines half of the page is pre-existing and out of scope.
+- `BrandEditorPage` calls `brandEditorRoute.useParams()`, which requires either a real TanStack memory router or a mock of the param hook. The first route-level test in the repo is not the place to introduce a memory-router harness — that's a Phase B / Phase 9 conversation flagged in the changelog (line 374 of the pre-1.1.0 file).
+- Targeted tests fail more legibly. A failure in this file points at the Projects wiring directly; a page-level failure could be from anything between the route param hook and the Guidelines editor.
+
+Filename still matches the plan (`brands.$brandId.test.tsx`) — same co-location, tighter scope of what's mounted.
+
+**Three test-only invariants.**
+
+- **`vi.mock('@tanstack/react-router', …)`** — two consumers in the rendered tree call `useNavigate` (`ProjectCard.onClick`, `NewProjectDialog.onSuccess`). Neither is exercised in the assertions; the mock returns a no-op `useNavigate` and spreads `actual` so other re-exports keep working. Alternative — `createMemoryHistory` + `createRouter` + `RouterProvider` — is the right tool when navigation itself is being asserted (Phase B will need it), but pure ceremony around two unread function calls here.
+- **`staleTime: Infinity`** on the test `QueryClient` — by default TanStack Query marks a freshly `setQueryData`-populated entry as stale-but-cached; first render returns the cached value, then schedules a background refetch into `api.brands[':brandId'].projects.$get`. Under jsdom without a global `fetch` stub, that explodes (or silently noises up logs). `Infinity` keeps the seeded data fresh, refetch never fires, tests run deterministically. Test-only — no production code change.
+- **`retry: false`** on queries — matches the `useAgentChat` test convention. Belt-and-braces with `staleTime: Infinity`: even if a stray refetch slipped through, no retry-storm in the runner.
+
+**No `user-event`, no click assertions.** Plan said RTL only. A.5 went further — no DOM event asserted at all. The new wiring is *what renders*, not *what happens on click*. The mutation hook (A.1) and the dialog submit (A.2) are both glue around library calls (`useMutation`, `Dialog`); clicking would test the library, not the wiring.
+
+**A small lesson recorded.** First iteration used `importOriginal<typeof import('@tanstack/react-router')>()`. Lint flagged it as a violation of `@typescript-eslint/consistent-type-imports` — `import()` expressions count as inline imports, which the project disallows in favour of top-level `import type` statements. Resolution: lift the module shape to a top-level `import type * as TanStackRouter` and reference that in the generic. Same runtime behaviour; satisfies the lint rule. Pattern now precedented for any future `vi.mock` that uses `importOriginal<typeof import(…)>()`.
+
+Test count 56 → **58 (+2)** in the web package, 238 → **240 (+2)** repo-wide. Both new cases land alongside the pre-existing 56 with no flakes across multiple local runs.
+
+### Verification
+
+```
+pnpm typecheck                              ✔  9/9 workspaces clean
+pnpm lint                                   ✔  clean (zero new suppressions)
+pnpm format:check                           ✔  clean
+pnpm test                                   ✔  239 passed + 1 skipped (240 total; +2 vs 1.0.0)
+pnpm --filter @brandfactory/web build       ✔  clean (1.1 MB main-chunk warning unchanged from 0.7.4 — TipTap + Radix; code-split pass remains deferred)
+```
+
+The one skipped case (`seed.test.ts`) is unchanged from 1.0.0 — runs only with `DATABASE_URL` set, exercised in CI's Postgres service.
+
+### Files touched (net diff)
+
+- `packages/web/src/api/queries/brands.ts` — 1 import + `useCreateProject` hook (15 LOC).
+- `packages/web/src/routes/brands.$brandId.tsx` — 3 new imports + `NewProjectDialog` + `ProjectCard` + `ProjectsSection` + page-body restructure (~138 LOC added across the new components and the section wrapping; one subtitle line removed). `ProjectsSection` is exported for the test; the rest stay file-private.
+- `packages/web/src/routes/brands.$brandId.test.tsx` — new (60 LOC, 2 tests).
+- `docs/completions/projects-reachable-and-functional-phase-a{1,2,3,4,5}.md` — five per-phase completion docs (the audit trail).
+- `docs/completions/phase6-hosted.md` → `docs/archive/phase6-hosted.md` — moved. The 1.0.0 hosted-deploy completion docs are operator playbooks bound to that release; archiving keeps the active completions folder scoped to current-thread records.
+
+Total: ~155 LOC of code change, comfortably under the plan's ~200-line target.
+
+### What 1.1.0 explicitly does NOT include
+
+**Thread B — end-to-end verification.** The plan is two threads; 1.1.0 ships Thread A only. Thread B is a manual, browser-driven 15-row verification matrix + 3 vision-bar depth observations + a Findings write-up. It lands as a separate follow-up once a human drives the browser through each row. Specifically deferred to Thread B:
+
+- Confirming the create-project → split-screen flow actually paints end-to-end (row 1).
+- Confirming the agent's `add three taglines to the canvas` motion writes blocks visible to a second tab via realtime (rows 2, 3, 11).
+- Pin / shortlist / drag-reorder / image-drop / non-image-drop behaviour (rows 4–10).
+- Mid-stream reload + 409 `AGENT_BUSY` concurrency guard (rows 14, 15).
+- Vision-bar observations: does the agent actually condition on pinned blocks? Does it acknowledge between-turn edits? Is the canvas's vertical-stack shape a vision-bar gap relative to the Pinterest-style spatial board the vision describes?
+
+**Out of scope by plan design.** Standardized project templates UI (no template registered yet — backend supports the discriminator, frontend stays freeform-only); project rename / delete / archive (defer to a roadmap thread); agent canvas-awareness depth pass (separate plan; Thread B's vision-bar observations will inform scope); Playwright / e2e harness (Phase 9 conversation flagged in 0.7.4); shortlist view depth + soft-delete + finalize→promote-to-guidelines (vision items #3–#4, separate threads).
+
+**Deferred items.** Memory-router test harness — lands the first time a navigation-asserting test arrives (Phase B); the brand-page header restructure into tabs / sub-routes (option c from Q1) — natural reversal of the dropped subtitle once Shortlist and Finalize surfaces also land on the brand page; mutation-flow integration test for `useCreateProject` and `useUploadBlob` (skipped per the fetch-glue carve-out, revisited if Phase B surfaces a regression); project-card recency-sort + per-card metadata (block count, last assistant message preview) — defer until a returning-user pain point surfaces; standardized-template picker scaffolding — landed at zero-cost the day there's a template to register.
 
 ---
 

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
   BrandGuidelineSection,
   BrandWithSections,
+  CreateProjectInput,
   Project,
   UpdateBrandGuidelinesInput,
 } from '@brandfactory/shared'
@@ -48,6 +49,22 @@ export function useBrandProjects(brandId: string) {
     queryFn: async () => {
       const res = await api.brands[':brandId'].projects.$get({ param: { brandId } })
       return callJson<Project[]>(res)
+    },
+  })
+}
+
+export function useCreateProject(brandId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: CreateProjectInput) => {
+      const res = await api.brands[':brandId'].projects.$post({
+        param: { brandId },
+        json: input,
+      })
+      return callJson<Project>(res)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: brandKeys.projects(brandId) })
     },
   })
 }

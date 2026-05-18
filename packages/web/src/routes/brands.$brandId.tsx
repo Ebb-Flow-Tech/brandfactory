@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { createRoute, Link, redirect } from '@tanstack/react-router'
+import { createRoute, Link, redirect, useNavigate } from '@tanstack/react-router'
 import { useEditor, EditorContent } from '@tiptap/react'
 import {
   DndContext,
@@ -23,6 +23,7 @@ import { toast } from 'sonner'
 import type {
   BrandGuidelineSection,
   BrandWithSections,
+  Project,
   ProseMirrorDoc,
   SectionId,
   UpdateBrandGuidelinesInput,
@@ -31,9 +32,22 @@ import { SUGGESTED_SECTIONS } from '@brandfactory/shared'
 import { rootRoute } from './__root'
 import { getAuthToken } from '@/auth/store'
 import { AppError } from '@/api/client'
-import { useBrand, useUpdateBrandGuidelines } from '@/api/queries/brands'
+import {
+  useBrand,
+  useBrandProjects,
+  useCreateProject,
+  useUpdateBrandGuidelines,
+} from '@/api/queries/brands'
 import { defaultExtensions } from '@/editor/proseMirrorSchema'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
@@ -277,6 +291,129 @@ function BrandEditorForm({ brand }: { brand: BrandWithSections }) {
 }
 
 // ---------------------------------------------------------------------------
+// NewProjectDialog — co-located creation dialog
+// ---------------------------------------------------------------------------
+
+function NewProjectDialog({ brandId }: { brandId: string }) {
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState('')
+  const navigate = useNavigate()
+  const mutation = useCreateProject(brandId)
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm">New project</Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>New project</DialogTitle>
+        </DialogHeader>
+        <form
+          id="new-project-form"
+          className="flex flex-col gap-4"
+          onSubmit={(e) => {
+            e.preventDefault()
+            const trimmed = name.trim()
+            if (!trimmed) return
+            mutation.mutate(
+              { kind: 'freeform', name: trimmed },
+              {
+                onSuccess: (project) => {
+                  setOpen(false)
+                  setName('')
+                  void navigate({
+                    to: '/projects/$projectId',
+                    params: { projectId: project.id },
+                  })
+                },
+                onError: (err) => {
+                  toast.error(err instanceof AppError ? err.message : 'Failed to create project')
+                },
+              },
+            )
+          }}
+        >
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="project-name">Name</Label>
+            <Input
+              id="project-name"
+              placeholder="Launch campaign"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+        </form>
+        <DialogFooter>
+          <Button variant="outline" type="button" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form="new-project-form"
+            disabled={!name.trim() || mutation.isPending}
+          >
+            {mutation.isPending ? 'Creating…' : 'Create'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ProjectCard / ProjectsSection — list of projects under a brand
+// ---------------------------------------------------------------------------
+
+function ProjectCard({ project }: { project: Project }) {
+  const navigate = useNavigate()
+
+  return (
+    <button
+      className="group rounded-lg border bg-card p-5 text-left shadow-sm transition-colors hover:bg-accent"
+      onClick={() =>
+        void navigate({ to: '/projects/$projectId', params: { projectId: project.id } })
+      }
+    >
+      <div className="font-semibold group-hover:text-accent-foreground">{project.name}</div>
+      <div className="mt-2 text-xs text-muted-foreground">
+        Created {new Date(project.createdAt).toLocaleDateString()}
+      </div>
+    </button>
+  )
+}
+
+export function ProjectsSection({ brandId }: { brandId: string }) {
+  const { data: projects, isPending, isError } = useBrandProjects(brandId)
+
+  return (
+    <section className="mb-10">
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Projects</h2>
+        <NewProjectDialog brandId={brandId} />
+      </div>
+
+      {isPending && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {isError && <p className="text-sm text-destructive">Failed to load projects.</p>}
+
+      {projects?.length === 0 && (
+        <p className="text-sm text-muted-foreground">
+          No projects yet. Create one to start brainstorming with the agent.
+        </p>
+      )}
+
+      {projects && projects.length > 0 && (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4">
+          {projects.map((project) => (
+            <ProjectCard key={project.id} project={project} />
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // BrandEditorPage — route component
 // ---------------------------------------------------------------------------
 
@@ -301,12 +438,16 @@ function BrandEditorPage() {
           </Link>
         )}
         <h1 className="mt-1 text-2xl font-semibold">{brand?.name ?? '…'}</h1>
-        <p className="text-sm text-muted-foreground">Brand guidelines</p>
       </div>
 
-      {isPending && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Failed to load brand.</p>}
-      {brand && <BrandEditorForm key={brand.id} brand={brand} />}
+      <ProjectsSection brandId={brandId} />
+
+      <section className="border-t pt-6">
+        <h2 className="mb-4 text-lg font-semibold">Guidelines</h2>
+        {isPending && <p className="text-sm text-muted-foreground">Loading…</p>}
+        {isError && <p className="text-sm text-destructive">Failed to load brand.</p>}
+        {brand && <BrandEditorForm key={brand.id} brand={brand} />}
+      </section>
     </div>
   )
 }
